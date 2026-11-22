@@ -314,7 +314,7 @@ def main() -> None:
     allowed = [
         "config.json", "generation_config.json", "tokenizer.json", "tokenizer_config.json",
         "special_tokens_map.json", "vocab.json", "merges.txt", "added_tokens.json",
-        "chat_template.jinja", "chat_template.json",
+        "chat_template.jinja", "chat_template.json", "LICENSE", "LICENSE.txt",
     ]
     snapshot_download(
         repo_id=args.model_id,
