@@ -69,7 +69,8 @@ def parse_args() -> argparse.Namespace:
                    help="Target BPW for eligible nn.Linear weights, not the whole model.")
     p.add_argument("--kv-factor", type=float, default=1.15,
                    help="Slightly increase rank for k_proj/v_proj for quality headroom.")
-    p.add_argument("--itq-n-iter", type=int, default=50)
+    p.add_argument("--itq-n-iter", type=int, default=10,
+                   help="Use 10 for the 1-2h target profile; 50 is slower and closer to the paper-style initialization.")
     p.add_argument("--workers", type=int, default=2)
     p.add_argument("--hf-token", default=os.environ.get("HF_TOKEN"))
     p.add_argument("--keep-source-shards", action="store_true",
@@ -391,6 +392,9 @@ def main() -> None:
         proc.start()
     available_gpu_ids = list(gpu_ids)
     pending = 0
+    download_pool = None
+    download_future = None
+    download_future_index = None
     run_signature = {
         "model_id": args.model_id,
         "eff_bit": float(args.eff_bit),
@@ -416,7 +420,31 @@ def main() -> None:
         log(f"Converted shard {completed}/{total}: {payload['output_file']} | "
             f"{payload['converted_layers']} linear layers | {payload['elapsed_seconds']/60:.1f} min")
 
+    def output_is_complete(shard_number: int) -> bool:
+        name = f"model-{shard_number:05d}-of-{total:05d}.safetensors"
+        path = output_dir / name
+        return path.exists() and path.with_suffix(path.suffix + ".meta.json").exists()
+
+    def download_one(shard_name: str) -> str:
+        log(f"Prefetching source shard: {shard_name}")
+        return hf_hub_download(
+            repo_id=args.model_id,
+            filename=shard_name,
+            repo_type="model",
+            local_dir=str(source_dir),
+            token=args.hf_token,
+        )
+
+    def next_missing_index(after_index: int) -> int | None:
+        for candidate in range(after_index + 1, total + 1):
+            if not output_is_complete(candidate):
+                return candidate
+        return None
+
     try:
+        from concurrent.futures import ThreadPoolExecutor
+        download_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hf-prefetch")
+
         for shard_index, shard_name in enumerate(source_shards, start=1):
             out_name = f"model-{shard_index:05d}-of-{total:05d}.safetensors"
             out_path = output_dir / out_name
@@ -439,17 +467,24 @@ def main() -> None:
                 out_path.unlink()  # orphaned file from interruption before sidecar write
 
             if not available_gpu_ids:
+                # The next source shard is already downloading on a background thread.
                 collect_one()
             gpu_id = available_gpu_ids.pop(0)
 
-            log(f"Downloading shard {shard_index}/{total}: {shard_name}")
-            local_source = hf_hub_download(
-                repo_id=args.model_id,
-                filename=shard_name,
-                repo_type="model",
-                local_dir=str(source_dir),
-                token=args.hf_token,
-            )
+            if download_future is None or download_future_index != shard_index:
+                download_future = download_pool.submit(download_one, shard_name)
+                download_future_index = shard_index
+            local_source = download_future.result()
+            download_future = None
+            download_future_index = None
+
+            # Prefetch exactly one upcoming missing shard while this shard is
+            # being factorized. This keeps scratch usage bounded to ~2 source shards.
+            lookahead = next_missing_index(shard_index)
+            if lookahead is not None:
+                download_future = download_pool.submit(download_one, source_shards[lookahead - 1])
+                download_future_index = lookahead
+
             task = {
                 "source_path": str(local_source),
                 "output_path": str(out_path),
@@ -470,6 +505,8 @@ def main() -> None:
         while pending:
             collect_one()
     finally:
+        if download_pool is not None:
+            download_pool.shutdown(wait=True, cancel_futures=True)
         for q in task_queues.values():
             try:
                 q.put(None)
