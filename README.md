@@ -25,7 +25,7 @@ Kaggle must have enough free scratch space for two source shards and enough pers
 
 The default profile is intentionally less aggressive than the requested 0.30 BPW:
 
-- LittleBit-2 Joint-ITQ enabled; 50 ITQ iterations
+- LittleBit-2 Joint-ITQ enabled; 10 ITQ iterations by default (use `--itq-n-iter 50` for slower, more thorough alignment)
 - SmoothSign binary factors
 - Residual factorization enabled
 - 0.45 target BPW for eligible linear weight matrices
@@ -48,9 +48,26 @@ The BPW target applies to eligible `nn.Linear` weights, not the entire model. Th
 - The upstream loader expands packed binary factors to floating-point tensors for inference. The compact on-disk size therefore does not mean the model will fit in 15 GiB VRAM. Use a machine with sufficient host/GPU memory or a custom packed-factor inference implementation.
 - Completed shard files and matching metadata sidecars are retained so the script can resume or skip already-finished shards when rerun with the same settings. It refuses to mix shards produced with different quantization settings.
 
-## Expected runtime
+## Fast runtime profile
 
-Plan for approximately **4–10 hours** for a first conversion, subject to Hugging Face download throughput and Kaggle T4 performance. This is an engineering estimate, not a measured benchmark; it can exceed one 12-hour Kaggle session. The script logs per-shard time and supports resuming completed shards when the output directory is preserved. The full 32B QAT/distillation stage is not included and would require substantially more capable hardware.
+The default script is tuned to make a **1–2 hour run plausible**, not guaranteed:
+
+- 10 Joint-ITQ iterations instead of 50
+- One-file asynchronous download prefetch while the two GPU workers quantize
+- Two persistent, GPU-pinned workers, one per T4
+- 0.45 BPW with residual factorization retained
+
+The base weights are **65.5 GB**. To download 65.5 GB in two hours requires at least about **9.1 MB/s sustained** before conversion overhead; in one hour it requires about **18.2 MB/s**. For a practical 1–2 hour end-to-end target, aim for roughly 15–25 MB/s or better from Hugging Face. Actual Kaggle network speed, T4 utilization, and storage throughput vary, so this is a target, not a benchmarked guarantee.
+
+If time matters more than quality, use a more aggressive run:
+
+```bash
+python /kaggle/working/Sarvagya/kaggle/littlebit2_qwen25_32b.py --eff-bit 0.30 --itq-n-iter 8
+```
+
+That lowers the factor rank and should reduce decomposition time, but it increases approximation error. It is not the profile I recommend for preserving intelligence.
+
+The script logs per-shard times and supports resuming completed shards when the output directory is preserved. The full 32B QAT/distillation stage is not included and would require substantially more capable hardware.
 
 ## Upstream and licensing
 
