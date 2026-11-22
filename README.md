@@ -40,6 +40,14 @@ To force the user's requested 0.30 BPW instead, append:
 
 The BPW target applies to eligible `nn.Linear` weights, not the entire model. The script reports measured linear BPW, estimated whole-model BPW, and actual checkpoint file BPW in `COMPRESSION_REPORT.json`.
 
+## Recent Kaggle compatibility fix
+
+The converter applies a small, API-compatible lazy-import patch to the pinned upstream `quantization.utils` package before loading workers. The upstream eager `utils/__init__.py` re-export caused a circular import when importing `LittleBitLinear`. A smoke test now runs before any model weights are downloaded, so this class of import failure is caught immediately.
+
+Dependency installation now uses `pip --no-deps` and only installs missing runtime packages. This avoids changing Kaggle's preinstalled PyTorch/CUDA and Hugging Face Hub stack merely to satisfy unrelated Gradio/Diffusers resolver constraints. Pip resolver warnings from the old run were not the cause of the crash.
+
+**After a failed run:** pull the latest Sarvagya commit and rerun the same command in the same Kaggle session. The first few source shards already fetched under `/kaggle/temp/sarvagya_littlebit2/source` should be reused from the Hugging Face local cache; no output shards had been committed before the circular-import failure.
+
 ## Critical limitations
 
 - **This is not lossless.** No low-bit weight approximation can guarantee identical outputs to the BF16 source checkpoint.
