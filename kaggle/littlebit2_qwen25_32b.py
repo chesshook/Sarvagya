@@ -62,7 +62,8 @@ def ensure_dependencies() -> None:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--model-id", default=MODEL_DEFAULT)
-    p.add_argument("--output-dir", default="/kaggle/working/littlebit2-qwen2.5-32b-0.45bpw")
+    p.add_argument("--output-dir", default=None,
+                   help="Defaults to /kaggle/working/littlebit2-qwen2.5-32b-<eff-bit>bpw.")
     p.add_argument("--scratch-dir", default="/kaggle/temp/sarvagya_littlebit2")
     p.add_argument("--eff-bit", type=float, default=0.45,
                    help="Target BPW for eligible nn.Linear weights, not the whole model.")
@@ -249,6 +250,7 @@ def worker_convert_shard(task: dict[str, Any]) -> dict[str, Any]:
         "converted_layers": converted_layers,
         "tensor_bytes": tensor_bytes,
         "elapsed_seconds": duration,
+        "run_signature": task["run_signature"],
     }
     meta_path = output_path.with_suffix(output_path.suffix + ".meta.json")
     meta_tmp = meta_path.with_suffix(meta_path.suffix + ".partial")
@@ -297,7 +299,8 @@ def main() -> None:
     from safetensors import safe_open
     from transformers import AutoConfig, AutoModelForCausalLM
 
-    output_dir = Path(args.output_dir).resolve()
+    output_path = args.output_dir or f"/kaggle/working/littlebit2-qwen2.5-32b-{args.eff_bit:.2f}bpw"
+    output_dir = Path(output_path).resolve()
     scratch_dir = Path(args.scratch_dir).resolve()
     source_dir = scratch_dir / "source"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -388,6 +391,14 @@ def main() -> None:
         proc.start()
     available_gpu_ids = list(gpu_ids)
     pending = 0
+    run_signature = {
+        "model_id": args.model_id,
+        "eff_bit": float(args.eff_bit),
+        "kv_factor": float(args.kv_factor),
+        "itq_n_iter": int(args.itq_n_iter),
+        "residual": not args.no_residual,
+        "upstream_commit": UPSTREAM_COMMIT,
+    }
 
     def collect_one() -> None:
         nonlocal pending, completed
@@ -415,6 +426,11 @@ def main() -> None:
             if out_path.exists() and meta_path.exists():
                 with open(meta_path, "r", encoding="utf-8") as f:
                     resumed = json.load(f)
+                if resumed.get("run_signature") != run_signature:
+                    raise RuntimeError(
+                        f"Existing shard {out_name} was produced with different settings. "
+                        "Choose a fresh --output-dir or restore the matching BPW/KV/residual settings."
+                    )
                 results.append(resumed)
                 completed += 1
                 log(f"Resuming: shard {shard_index}/{total} already completed ({out_name}).")
@@ -439,6 +455,7 @@ def main() -> None:
                 "output_path": str(out_path),
                 "linear_specs": linear_specs,
                 "upstream_dir": str(upstream_dir),
+                "run_signature": run_signature,
                 "args": {
                     "eff_bit": float(args.eff_bit),
                     "kv_factor": float(args.kv_factor),
@@ -586,12 +603,6 @@ The output is compact on disk. The current official loader expands packed binary
 The LittleBit implementation is CC BY-NC 4.0. Check the base Qwen model license and all third-party terms before redistribution or commercial use.
 """
     (output_dir / "README.md").write_text(readme, encoding="utf-8")
-    for sidecar in output_dir.glob("model-*.safetensors.meta.json"):
-        try:
-            sidecar.unlink()
-        except OSError:
-            pass
-
     log("COMPLETE")
     log(f"Output: {output_dir}")
     log(f"Compressed safetensors: {file_size/1024**3:.2f} GiB")
