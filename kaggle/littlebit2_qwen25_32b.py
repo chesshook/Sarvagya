@@ -49,16 +49,29 @@ def ensure_dependencies() -> None:
     except ImportError as exc:
         raise RuntimeError("Kaggle's preinstalled PyTorch is required; do not replace its CUDA build.") from exc
 
-    # Install the pinned Transformers release without resolving its old
-    # huggingface-hub<1 dependency constraint. Kaggle images may ship Hub 1.x
-    # for Gradio/Diffusers; downgrading it creates unrelated environment conflicts.
-    run([sys.executable, "-m", "pip", "install", "-q", "--no-deps", "transformers==4.51.3"])
-    requirements = [
-        "accelerate>=1.6.0",
-        "safetensors>=0.4.5",
-        "sentencepiece",
+    # Install without dependency resolution: Kaggle images have a broad prebuilt
+    # ML environment, and pip's resolver can downgrade/upgrade huggingface_hub
+    # and create unrelated Gradio/Diffusers conflicts. These imports are checked
+    # before doing any model download.
+    import importlib.util
+    import importlib.metadata
+    try:
+        current_transformers = importlib.metadata.version("transformers")
+    except importlib.metadata.PackageNotFoundError:
+        current_transformers = None
+    if current_transformers != "4.51.3":
+        run([sys.executable, "-m", "pip", "install", "-q", "--no-deps", "transformers==4.51.3"])
+
+    missing = [
+        package for module_name, package in (
+            ("accelerate", "accelerate"),
+            ("safetensors", "safetensors"),
+            ("sentencepiece", "sentencepiece"),
+        )
+        if importlib.util.find_spec(module_name) is None
     ]
-    run([sys.executable, "-m", "pip", "install", "-q", *requirements])
+    if missing:
+        run([sys.executable, "-m", "pip", "install", "-q", "--no-deps", *missing])
 
 
 def parse_args() -> argparse.Namespace:
