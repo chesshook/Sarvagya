@@ -49,10 +49,12 @@ def ensure_dependencies() -> None:
     except ImportError as exc:
         raise RuntimeError("Kaggle's preinstalled PyTorch is required; do not replace its CUDA build.") from exc
 
+    # Install the pinned Transformers release without resolving its old
+    # huggingface-hub<1 dependency constraint. Kaggle images may ship Hub 1.x
+    # for Gradio/Diffusers; downgrading it creates unrelated environment conflicts.
+    run([sys.executable, "-m", "pip", "install", "-q", "--no-deps", "transformers==4.51.3"])
     requirements = [
-        "transformers==4.51.3",
         "accelerate>=1.6.0",
-        "huggingface_hub>=0.30.0",
         "safetensors>=0.4.5",
         "sentencepiece",
     ]
@@ -134,7 +136,50 @@ def ensure_upstream(scratch: Path) -> Path:
     else:
         run(["git", "clone", UPSTREAM_REPO, str(upstream)])
         run(["git", "checkout", "--detach", UPSTREAM_COMMIT], cwd=str(upstream))
-    log(f"Using official SamsungLabs/LittleBit commit {UPSTREAM_COMMIT}")
+    # Upstream's eager quantization.utils import creates a circular import:
+    # modules.littlebit -> utils.__init__ -> utils.quant_util -> modules.
+    # Replace eager re-exports with a lazy, API-compatible loader. The same
+    # patched file is bundled into the final model's quantization/ package.
+    utils_init = upstream / "quantization" / "utils" / "__init__.py"
+    utils_init.write_text(
+        '"""Lazy exports for LittleBit quantization utilities.\\n'
+        'Avoid importing quant_util while binary_packer is being initialised.\\n"""\\n'
+        'from importlib import import_module\\n'
+        '__all__ = ["get_quant_func_and_mod", "patch_inst", "apply_littlebit_patch", "binary_packer"]\\n'
+        'def __getattr__(name):\\n'
+        '    if name == "binary_packer":\\n'
+        '        return import_module(".binary_packer", __name__).binary_packer\\n'
+        '    if name in {"get_quant_func_and_mod", "patch_inst", "apply_littlebit_patch"}:\\n'
+        '        return getattr(import_module(".quant_util", __name__), name)\\n'
+        '    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")\\n'
+        'def __dir__():\\n'
+        '    return sorted(set(globals()) | set(__all__))\\n',
+        encoding="utf-8",
+    )
+    # Fail immediately, before downloading 65 GB, if the exact worker imports regress.
+    probe_env = os.environ.copy()
+    probe_env["PYTHONPATH"] = str(upstream) + os.pathsep + probe_env.get("PYTHONPATH", "")
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from quantization.modules.littlebit import LittleBitLinear; "
+            "from quantization.functions.binary import SmoothSign; "
+            "from quantization.utils import binary_packer, apply_littlebit_patch; "
+            "print('LittleBit imports OK')",
+        ],
+        cwd=str(upstream),
+        env=probe_env,
+        capture_output=True,
+        text=True,
+    )
+    if probe.returncode != 0:
+        raise RuntimeError(
+            "LittleBit import smoke test failed before model download:\\n"
+            + probe.stdout + probe.stderr
+        )
+    log(probe.stdout.strip() or "LittleBit import smoke test passed.")
+    log(f"Using official SamsungLabs/LittleBit commit {UPSTREAM_COMMIT} (local circular-import compatibility patch applied)")
     return upstream
 
 
