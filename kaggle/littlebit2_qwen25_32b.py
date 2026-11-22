@@ -310,7 +310,7 @@ def main() -> None:
     gpu_ids = resource_audit(scratch_dir, output_dir, args.workers)
     upstream_dir = ensure_upstream(scratch_dir)
 
-    log("Downloading model config/tokenizer files (not the 65+ GiB weight set)...")
+    log("Downloading model config/tokenizer files (not the full ~65 GB BF16 weight set)...")
     allowed = [
         "config.json", "generation_config.json", "tokenizer.json", "tokenizer_config.json",
         "special_tokens_map.json", "vocab.json", "merges.txt", "added_tokens.json",
