@@ -42,7 +42,7 @@ The BPW target applies to eligible `nn.Linear` weights, not the entire model. Th
 
 ## Recent Kaggle compatibility fix
 
-The converter applies a small, API-compatible lazy-import patch to the pinned upstream `quantization.utils` package before loading workers. The upstream eager `utils/__init__.py` re-export caused a circular import when importing `LittleBitLinear`. A smoke test now runs before any model weights are downloaded, so this class of import failure is caught immediately.
+The converter applies a small, API-compatible lazy-import patch to the pinned upstream `quantization.utils` package before loading workers. The upstream eager `utils/__init__.py` re-export caused a circular import when importing `LittleBitLinear`. The lazy initializer is generated line-by-line (with real OS newlines), and a smoke test runs before any model weights are downloaded, so syntax/import failures are caught immediately.
 
 Dependency installation now uses `pip --no-deps` and only installs missing runtime packages. This avoids changing Kaggle's preinstalled PyTorch/CUDA and Hugging Face Hub stack merely to satisfy unrelated Gradio/Diffusers resolver constraints. Pip resolver warnings from the old run were not the cause of the crash.
 
