@@ -174,7 +174,7 @@ def ensure_upstream(scratch: Path) -> Path:
         'def __dir__():',
         '    return sorted(set(globals()) | set(__all__))',
     ]
-    lazy_utils_source = "\\n".join(lazy_utils_lines) + "\\n"
+    lazy_utils_source = os.linesep.join(lazy_utils_lines) + os.linesep
     utils_init.write_text(lazy_utils_source, encoding="utf-8")
     # Fail immediately, before downloading 65 GB, if the exact worker imports regress.
     probe_env = os.environ.copy()
