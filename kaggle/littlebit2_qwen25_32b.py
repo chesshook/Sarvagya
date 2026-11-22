@@ -154,21 +154,30 @@ def ensure_upstream(scratch: Path) -> Path:
     # Replace eager re-exports with a lazy, API-compatible loader. The same
     # patched file is bundled into the final model's quantization/ package.
     utils_init = upstream / "quantization" / "utils" / "__init__.py"
-    utils_init.write_text(
-        '"""Lazy exports for LittleBit quantization utilities.\\n'
-        'Avoid importing quant_util while binary_packer is being initialised.\\n"""\\n'
-        'from importlib import import_module\\n'
-        '__all__ = ["get_quant_func_and_mod", "patch_inst", "apply_littlebit_patch", "binary_packer"]\\n'
-        'def __getattr__(name):\\n'
-        '    if name == "binary_packer":\\n'
-        '        return import_module(".binary_packer", __name__).binary_packer\\n'
-        '    if name in {"get_quant_func_and_mod", "patch_inst", "apply_littlebit_patch"}:\\n'
-        '        return getattr(import_module(".quant_util", __name__), name)\\n'
-        '    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")\\n'
-        'def __dir__():\\n'
-        '    return sorted(set(globals()) | set(__all__))\\n',
-        encoding="utf-8",
-    )
+    lazy_utils_source = """\
+"""Lazy exports for LittleBit quantization utilities.
+Avoid importing quant_util while binary_packer is being initialised.
+"""
+from importlib import import_module
+
+__all__ = [
+    "get_quant_func_and_mod",
+    "patch_inst",
+    "apply_littlebit_patch",
+    "binary_packer",
+]
+
+def __getattr__(name):
+    if name == "binary_packer":
+        return import_module(".binary_packer", __name__).binary_packer
+    if name in {"get_quant_func_and_mod", "patch_inst", "apply_littlebit_patch"}:
+        return getattr(import_module(".quant_util", __name__), name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))
+"""
+    utils_init.write_text(lazy_utils_source, encoding="utf-8")
     # Fail immediately, before downloading 65 GB, if the exact worker imports regress.
     probe_env = os.environ.copy()
     probe_env["PYTHONPATH"] = str(upstream) + os.pathsep + probe_env.get("PYTHONPATH", "")
